@@ -4,11 +4,13 @@ import requests
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Monitor de Fumaça Brasil", page_icon="🌫️", layout="centered")
 
-# SUA CHAVE DE API (OPENWEATHERMAP)
-# Esta chave é gratuita, mas tem limite de requisições. 
-# Se parar de funcionar, você precisa criar uma conta em openweathermap.org e gerar uma nova.
-API_KEY = "0b4997e4bd1695c97b76a29a2222ec37"
-
+# --- SEGURANÇA ---
+# Em vez de colocar a chave aqui, mandamos o Streamlit buscar nos "segredos" do servidor
+try:
+    API_KEY = st.secrets["OPENWEATHER_KEY"]
+except FileNotFoundError:
+    st.error("Chave de API não encontrada. Configure os 'Secrets' no painel do Streamlit Cloud.")
+    st.stop()
 # --- FUNÇÕES ---
 
 def get_lat_lon(nome_cidade):
