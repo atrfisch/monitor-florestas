@@ -2,156 +2,136 @@ import streamlit as st
 import pandas as pd
 import requests
 import altair as alt
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# Configuração da Página
-st.set_page_config(
-    page_title="Dashboard MapBiomas",
-    page_icon="📊",
-    layout="wide"
-)
+# Configuração
+st.set_page_config(page_title="Monitor de Ar & Fumaça", page_icon="😷", layout="wide")
 
-# --- CONFIGURAÇÃO DA API ---
-# Headers para evitar bloqueio (mimetizando um navegador real)
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json",
-    "Referer": "https://plataforma.alerta.mapbiomas.org/"
+# --- SUA CHAVE DE API AQUI ---
+# Para funcionar com dados reais, coloque sua chave entre as aspas abaixo.
+# Exemplo: API_KEY = "a1b2c3d4e5..."
+API_KEY = "0b4997e4bd1695c97b76a29a2222ec37" 
+
+# --- CIDADES ALVO (AMAZÔNIA) ---
+CIDADES = {
+    "Porto Velho (RO)": {"lat": -8.7612, "lon": -63.9039},
+    "Altamira (PA)": {"lat": -3.2033, "lon": -52.2064},
+    "Manaus (AM)": {"lat": -3.1190, "lon": -60.0217},
+    "Rio Branco (AC)": {"lat": -9.9754, "lon": -67.8249},
+    "Lábrea (AM)": {"lat": -7.2590, "lon": -64.7981},
+    "São Paulo (SP)": {"lat": -23.5505, "lon": -46.6333} # Para comparação
 }
 
-URL_API = "https://plataforma.alerta.mapbiomas.org/api/v1/alerts"
+# --- FUNÇÕES ---
+def buscar_poluicao(lat, lon):
+    """
+    Busca dados de qualidade do ar (PM2.5) na API OpenWeatherMap.
+    PM2.5 é a principal partícula gerada por queimadas.
+    """
+    if not API_KEY:
+        return None, "Sem Chave"
 
-# --- FUNÇÃO DE BUSCA DE DADOS ---
-@st.cache_data(ttl=3600) # Cache de 1 hora para não sobrecarregar a API
-def carregar_dados(dias_atras=30, limite=2000):
-    """
-    Busca os últimos X alertas para gerar as estatísticas.
-    """
-    data_inicio = (datetime.now() - timedelta(days=dias_atras)).strftime('%Y-%m-%d')
-    
-    params = {
-        "published_at_from": data_inicio,
-        "limit": limite,
-        "sort_by": "published_at",
-        "sort_order": "desc"
-    }
+    url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={API_KEY}"
     
     try:
-        response = requests.get(URL_API, params=params, headers=HEADERS, timeout=15)
-        response.raise_for_status()
-        dados = response.json()
-        
-        # A API pode retornar dicionário {'data': [...]} ou lista direta [...]
-        lista_alertas = dados.get('data', []) if isinstance(dados, dict) else dados
-        
-        if not lista_alertas:
-            return pd.DataFrame()
-
-        # Transformar em DataFrame para facilitar cálculos
-        df = pd.DataFrame(lista_alertas)
-        
-        # Selecionar e limpar colunas importantes
-        cols_desejadas = ['alert_code', 'area_ha', 'state', 'municipality', 'published_at']
-        # Garante que as colunas existem antes de filtrar
-        cols_existentes = [c for c in cols_desejadas if c in df.columns]
-        df = df[cols_existentes]
-        
-        # Converter data
-        df['published_at'] = pd.to_datetime(df['published_at'])
-        df['Data'] = df['published_at'].dt.date # Cria coluna só com a data (sem hora)
-        
-        return df
-
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            # O OpenWeather retorna um índice AQI (1=Bom, 5=Péssimo) e componentes brutos
+            return data['list'][0], "Sucesso"
+        else:
+            return None, f"Erro {response.status_code}"
     except Exception as e:
-        st.error(f"Erro na conexão com MapBiomas: {e}")
-        return pd.DataFrame()
+        return None, str(e)
+
+def classificar_aqi(aqi_valor):
+    """Traduz o índice numérico para texto e cor"""
+    mapa = {
+        1: ("Boa", "#00e400"),      # Verde
+        2: ("Razoável", "#ffff00"), # Amarelo
+        3: ("Moderada", "#ff7e00"), # Laranja
+        4: ("Ruim", "#ff0000"),     # Vermelho
+        5: ("Péssima (Fumaça)", "#8f3f97") # Roxo
+    }
+    return mapa.get(aqi_valor, ("Desconhecido", "#grey"))
 
 # --- INTERFACE ---
-st.title("📊 Painel de Controle: Desmatamento Recente")
-st.markdown("Análise baseada nos alertas validados publicados pelo **MapBiomas Alerta**.")
+st.title("🌫️ Monitor de Fumaça na Amazônia")
+st.markdown("""
+As queimadas na floresta liberam partículas finas (**PM2.5**) que viajam quilômetros e destroem a saúde humana.
+Este painel monitora a qualidade do ar em tempo real usando dados globais.
+""")
 
-# Filtros na Barra Lateral
-st.sidebar.header("Filtros")
-dias = st.sidebar.slider("Período de Análise (dias):", 7, 90, 30)
-limite_busca = st.sidebar.select_slider("Amostra de Alertas:", options=[500, 1000, 2000, 5000], value=1000)
+if not API_KEY:
+    st.warning("⚠️ **Atenção:** O app está rodando em **Modo de Simulação** porque a API Key não foi configurada.")
+    st.info("Para ver dados reais, crie uma conta grátis no OpenWeatherMap.org e cole a chave no código.")
 
-if st.sidebar.button("Atualizar Dados"):
-    st.cache_data.clear() # Limpa o cache para forçar nova busca
+# Seletor de Cidade
+cidade_escolhida = st.selectbox("Escolha uma cidade para monitorar:", list(CIDADES.keys()))
 
-# Carregamento
-with st.spinner(f"Baixando e processando os últimos {limite_busca} alertas..."):
-    df = carregar_dados(dias_atras=dias, limite=limite_busca)
+if cidade_escolhida:
+    coords = CIDADES[cidade_escolhida]
+    
+    # Busca Dados
+    dados_ar, status = buscar_poluicao(coords['lat'], coords['lon'])
+    
+    # --- SIMULAÇÃO (Se não tiver chave) ---
+    if status == "Sem Chave":
+        import random
+        # Simula um dado realista de cidade com queimada
+        aqi_simulado = random.choice([3, 4, 5]) if "SP" not in cidade_escolhida else 2
+        pm2_5_simulado = aqi_simulado * 25.5
+        dados_ar = {
+            "main": {"aqi": aqi_simulado},
+            "components": {"pm2_5": pm2_5_simulado, "co": 300.0, "no2": 10.0}
+        }
+    # ---------------------------------------
 
-if not df.empty:
-    # --- KPIs (Indicadores Principais) ---
-    total_area = df['area_ha'].sum()
-    total_alertas = len(df)
-    estado_top = df['state'].value_counts().idxmax()
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Área Total Detectada", f"{total_area:,.1f} ha")
-    col2.metric("Total de Alertas", total_alertas)
-    col3.metric("Estado + Crítico", estado_top)
-    
-    st.divider()
-
-    # --- 1. EVOLUÇÃO TEMPORAL (Gráfico de Linha/Área) ---
-    st.subheader("📅 Evolução Diária (Área Desmatada)")
-    
-    # Agrupar por dia
-    df_tempo = df.groupby('Data')['area_ha'].sum().reset_index()
-    
-    chart_tempo = alt.Chart(df_tempo).mark_area(
-        line={'color':'darkred'},
-        color=alt.Gradient(
-            gradient='linear',
-            stops=[alt.GradientStop(color='white', offset=0),
-                   alt.GradientStop(color='darkred', offset=1)],
-            x1=1, x2=1, y1=1, y2=0
-        )
-    ).encode(
-        x=alt.X('Data:T', title='Data de Publicação'),
-        y=alt.Y('area_ha:Q', title='Área (ha)'),
-        tooltip=['Data:T', 'area_ha:Q']
-    ).properties(height=350)
-    
-    st.altair_chart(chart_tempo, use_container_width=True)
-    
-    # --- COLUNAS PARA RANKINGS ---
-    col_est, col_mun = st.columns(2)
-    
-    # --- 2. RANKING DE ESTADOS (Gráfico de Barras) ---
-    with col_est:
-        st.subheader("🗺️ Top Estados (por Área)")
-        df_uf = df.groupby('state')['area_ha'].sum().reset_index().sort_values('area_ha', ascending=False)
+    if dados_ar:
+        aqi = dados_ar['main']['aqi']
+        pm25 = dados_ar['components']['pm2_5']
         
-        chart_uf = alt.Chart(df_uf).mark_bar().encode(
-            x=alt.X('area_ha:Q', title='Hectares'),
-            y=alt.Y('state:N', sort='-x', title='Estado'),
-            color=alt.value('#2E8B57'), # Cor Verde Floresta
-            tooltip=['state', 'area_ha']
-        )
-        st.altair_chart(chart_uf, use_container_width=True)
-
-    # --- 3. RANKING DE CIDADES (Tabela/Gráfico) ---
-    with col_mun:
-        st.subheader("🏙️ Top 10 Municípios")
-        df_mun = df.groupby(['municipality', 'state'])['area_ha'].sum().reset_index()
-        df_mun = df_mun.sort_values('area_ha', ascending=False).head(10)
+        texto_qualidade, cor_indicador = classificar_aqi(aqi)
         
-        # Mostra como gráfico de barras horizontal
-        chart_mun = alt.Chart(df_mun).mark_bar().encode(
-            x=alt.X('area_ha:Q', title='Hectares'),
-            y=alt.Y('municipality:N', sort='-x', title='Município'),
-            color=alt.value('#FF8C00'), # Cor Laranja
-            tooltip=['municipality', 'state', 'area_ha']
-        )
-        st.altair_chart(chart_mun, use_container_width=True)
+        # EXIBIÇÃO VISUAL DE IMPACTO
+        st.divider()
+        col_destaque, col_detalhe = st.columns([1, 2])
         
-    # --- TABELA DE DADOS BRUTOS ---
-    with st.expander("📂 Ver lista completa dos dados baixados"):
-        st.dataframe(df)
+        with col_destaque:
+            st.markdown(f"""
+            <div style="text-align: center; padding: 20px; border-radius: 10px; background-color: {cor_indicador}; color: black;">
+                <h2 style="margin:0">Qualidade do Ar</h2>
+                <h1 style="font-size: 60px; margin:0">{texto_qualidade}</h1>
+                <p>Índice AQI: {aqi}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col_detalhe:
+            st.subheader("Concentração de Partículas")
+            c1, c2 = st.columns(2)
+            c1.metric("PM2.5 (Fumaça Fina)", f"{pm25} µg/m³", help="Partículas finas geradas por combustão (fogo). São as mais perigosas pois entram na corrente sanguínea.")
+            c2.metric("CO (Monóxido de Carbono)", f"{dados_ar['components']['co']} µg/m³", help="Gás tóxico liberado por queimadas.")
+            
+            # Barrinha de progresso visual
+            st.write("Nível de Perigo (PM2.5):")
+            st.progress(min(pm25/150, 1.0)) # 150 é muito alto
+            
+            if aqi >= 4:
+                st.error("🚨 ALERTA DE SAÚDE: A concentração de fumaça está alta. Isso indica prováveis queimadas próximas ou transporte de fumaça pela atmosfera.")
+            elif aqi == 3:
+                st.warning("⚠️ Atenção: Grupos sensíveis (crianças e idosos) podem sofrer efeitos respiratórios.")
+            else:
+                st.success("✅ O ar está limpo neste momento.")
 
-else:
-    st.warning("Não foi possível carregar dados. O MapBiomas pode ter bloqueado a conexão ou não há alertas no período.")
-    st.info("Tente clicar em 'Atualizar Dados' na barra lateral.")
+        # --- AÇÃO ATIVISTA ---
+        st.divider()
+        st.subheader("📢 Transforme esse dado em ação")
+        msg = f"Alerta de Fumaça: A qualidade do ar em {cidade_escolhida} está classificada como '{texto_qualidade}' (PM2.5: {pm25}). As queimadas estão sufocando nossa cidade."
+        
+        # Link para compartilhar no Twitter/X
+        import urllib.parse
+        msg_encoded = urllib.parse.quote(msg)
+        st.markdown(f'[🐦 Postar no X (Twitter)](https://twitter.com/intent/tweet?text={msg_encoded})', unsafe_allow_html=True)
+
+    else:
+        st.error("Erro ao obter dados. Verifique a conexão.")
