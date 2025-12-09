@@ -1,137 +1,128 @@
 import streamlit as st
-import pandas as pd
 import requests
-import altair as alt
-from datetime import datetime
 
-# Configuração
-st.set_page_config(page_title="Monitor de Ar & Fumaça", page_icon="😷", layout="wide")
+# --- CONFIGURAÇÃO ---
+st.set_page_config(page_title="Monitor de Fumaça Brasil", page_icon="🌫️", layout="centered")
 
-# --- SUA CHAVE DE API AQUI ---
-# Para funcionar com dados reais, coloque sua chave entre as aspas abaixo.
-# Exemplo: API_KEY = "a1b2c3d4e5..."
-API_KEY = "0b4997e4bd1695c97b76a29a2222ec37" 
-
-# --- CIDADES ALVO (AMAZÔNIA) ---
-CIDADES = {
-    "Porto Velho (RO)": {"lat": -8.7612, "lon": -63.9039},
-    "Altamira (PA)": {"lat": -3.2033, "lon": -52.2064},
-    "Manaus (AM)": {"lat": -3.1190, "lon": -60.0217},
-    "Rio Branco (AC)": {"lat": -9.9754, "lon": -67.8249},
-    "Lábrea (AM)": {"lat": -7.2590, "lon": -64.7981},
-    "São Paulo (SP)": {"lat": -23.5505, "lon": -46.6333} # Para comparação
-}
+# SUA CHAVE DE API (OPENWEATHERMAP)
+# Esta chave é gratuita, mas tem limite de requisições. 
+# Se parar de funcionar, você precisa criar uma conta em openweathermap.org e gerar uma nova.
+API_KEY = "0b4997e4bd1695c97b76a29a2222ec37"
 
 # --- FUNÇÕES ---
-def buscar_poluicao(lat, lon):
-    """
-    Busca dados de qualidade do ar (PM2.5) na API OpenWeatherMap.
-    PM2.5 é a principal partícula gerada por queimadas.
-    """
-    if not API_KEY:
-        return None, "Sem Chave"
 
-    url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={API_KEY}"
+def get_lat_lon(nome_cidade):
+    """
+    Converte o nome da cidade (ex: 'Cuiabá') em Latitude e Longitude reais.
+    """
+    # Adicionamos ",BR" para garantir que busque no Brasil
+    query = f"{nome_cidade},BR"
+    url = f"http://api.openweathermap.org/geo/1.0/direct?q={query}&limit=1&appid={API_KEY}"
     
     try:
         response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            # O OpenWeather retorna um índice AQI (1=Bom, 5=Péssimo) e componentes brutos
-            return data['list'][0], "Sucesso"
-        else:
-            return None, f"Erro {response.status_code}"
+        data = response.json()
+        
+        if not data:
+            return None, None, "Cidade não encontrada. Tente verificar a grafia."
+            
+        lat = data[0]['lat']
+        lon = data[0]['lon']
+        nome_oficial = f"{data[0]['name']} - {data[0]['state']}"
+        return lat, lon, nome_oficial
+        
     except Exception as e:
-        return None, str(e)
+        return None, None, f"Erro de conexão: {str(e)}"
 
-def classificar_aqi(aqi_valor):
-    """Traduz o índice numérico para texto e cor"""
-    mapa = {
-        1: ("Boa", "#00e400"),      # Verde
-        2: ("Razoável", "#ffff00"), # Amarelo
-        3: ("Moderada", "#ff7e00"), # Laranja
-        4: ("Ruim", "#ff0000"),     # Vermelho
-        5: ("Péssima (Fumaça)", "#8f3f97") # Roxo
-    }
-    return mapa.get(aqi_valor, ("Desconhecido", "#grey"))
-
-# --- INTERFACE ---
-st.title("🌫️ Monitor de Fumaça na Amazônia")
-st.markdown("""
-As queimadas na floresta liberam partículas finas (**PM2.5**) que viajam quilômetros e destroem a saúde humana.
-Este painel monitora a qualidade do ar em tempo real usando dados globais.
-""")
-
-if not API_KEY:
-    st.warning("⚠️ **Atenção:** O app está rodando em **Modo de Simulação** porque a API Key não foi configurada.")
-    st.info("Para ver dados reais, crie uma conta grátis no OpenWeatherMap.org e cole a chave no código.")
-
-# Seletor de Cidade
-cidade_escolhida = st.selectbox("Escolha uma cidade para monitorar:", list(CIDADES.keys()))
-
-if cidade_escolhida:
-    coords = CIDADES[cidade_escolhida]
+def get_air_quality(lat, lon):
+    """
+    Busca os dados de poluição para a coordenada exata.
+    """
+    url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={API_KEY}"
     
-    # Busca Dados
-    dados_ar, status = buscar_poluicao(coords['lat'], coords['lon'])
-    
-    # --- SIMULAÇÃO (Se não tiver chave) ---
-    if status == "Sem Chave":
-        import random
-        # Simula um dado realista de cidade com queimada
-        aqi_simulado = random.choice([3, 4, 5]) if "SP" not in cidade_escolhida else 2
-        pm2_5_simulado = aqi_simulado * 25.5
-        dados_ar = {
-            "main": {"aqi": aqi_simulado},
-            "components": {"pm2_5": pm2_5_simulado, "co": 300.0, "no2": 10.0}
-        }
-    # ---------------------------------------
+    try:
+        response = requests.get(url)
+        data = response.json()
+        # Retorna o primeiro item da lista (dados atuais)
+        return data['list'][0]
+    except:
+        return None
 
-    if dados_ar:
-        aqi = dados_ar['main']['aqi']
-        pm25 = dados_ar['components']['pm2_5']
+def traduzir_aqi(aqi):
+    """
+    Traduz o índice numérico (1-5) para texto e cor.
+    1 = Bom, 5 = Péssimo
+    """
+    if aqi == 1: return "Ótima", "#2ecc71", "O ar está limpo. Aproveite o dia."
+    if aqi == 2: return "Razoável", "#f1c40f", "Aceitável, mas sensíveis devem ter cautela."
+    if aqi == 3: return "Moderada", "#e67e22", "Grupos sensíveis (idosos/crianças) podem sentir efeitos."
+    if aqi == 4: return "Ruim", "#e74c3c", "Atenção: Evite exercícios ao ar livre."
+    if aqi == 5: return "Péssima (Perigo)", "#8e44ad", "ALERTA: Fumaça intensa. Use máscara e feche janelas."
+    return "Erro", "#95a5a6", "Sem dados"
+
+# --- INTERFACE DO USUÁRIO ---
+
+st.title("🌫️ Monitor de Fumaça Brasil")
+st.markdown("Verifique a qualidade do ar em **qualquer cidade** do país em tempo real.")
+
+# 1. Entrada de Dados
+cidade_input = st.text_input("Digite o nome da cidade:", placeholder="Ex: Manaus, Cuiabá, São Paulo...")
+
+if cidade_input:
+    with st.spinner(f"Procurando '{cidade_input}' no mapa..."):
+        # Passo 1: Geocoding (Achar a cidade)
+        lat, lon, nome_encontrado = get_lat_lon(cidade_input)
         
-        texto_qualidade, cor_indicador = classificar_aqi(aqi)
+    if lat and lon:
+        st.success(f"Localizado: **{nome_encontrado}**")
         
-        # EXIBIÇÃO VISUAL DE IMPACTO
-        st.divider()
-        col_destaque, col_detalhe = st.columns([1, 2])
-        
-        with col_destaque:
+        # Passo 2: Buscar Poluição Real
+        with st.spinner("Analisando sensores de ar..."):
+            dados = get_air_quality(lat, lon)
+            
+        if dados:
+            # Extrair dados principais
+            aqi = dados['main']['aqi']
+            pm25 = dados['components']['pm2_5'] # Partículas finas (Fumaça)
+            co = dados['components']['co']       # Monóxido de Carbono
+            
+            status_texto, cor, recomendacao = traduzir_aqi(aqi)
+            
+            # --- EXIBIÇÃO DO RESULTADO ---
+            st.markdown("---")
+            
+            # Card Principal Colorido
             st.markdown(f"""
-            <div style="text-align: center; padding: 20px; border-radius: 10px; background-color: {cor_indicador}; color: black;">
-                <h2 style="margin:0">Qualidade do Ar</h2>
-                <h1 style="font-size: 60px; margin:0">{texto_qualidade}</h1>
-                <p>Índice AQI: {aqi}</p>
+            <div style="background-color: {cor}; padding: 20px; border-radius: 10px; text-align: center; color: white; text-shadow: 1px 1px 2px black;">
+                <h3 style="margin:0">Qualidade do Ar</h3>
+                <h1 style="font-size: 60px; margin:0">{status_texto}</h1>
+                <p style="font-size: 18px;">{recomendacao}</p>
             </div>
             """, unsafe_allow_html=True)
             
-        with col_detalhe:
-            st.subheader("Concentração de Partículas")
-            c1, c2 = st.columns(2)
-            c1.metric("PM2.5 (Fumaça Fina)", f"{pm25} µg/m³", help="Partículas finas geradas por combustão (fogo). São as mais perigosas pois entram na corrente sanguínea.")
-            c2.metric("CO (Monóxido de Carbono)", f"{dados_ar['components']['co']} µg/m³", help="Gás tóxico liberado por queimadas.")
+            st.write("") # Espaço
             
-            # Barrinha de progresso visual
-            st.write("Nível de Perigo (PM2.5):")
-            st.progress(min(pm25/150, 1.0)) # 150 é muito alto
+            # Métricas Detalhadas
+            c1, c2, c3 = st.columns(3)
+            c1.metric("PM2.5 (Fumaça Fina)", f"{pm25} µg/m³", delta="-15 (OMS)" if pm25 > 15 else "Ok")
+            c2.metric("Índice AQI", f"{aqi}/5")
+            c3.metric("CO (Monóxido)", f"{co} µg/m³")
             
-            if aqi >= 4:
-                st.error("🚨 ALERTA DE SAÚDE: A concentração de fumaça está alta. Isso indica prováveis queimadas próximas ou transporte de fumaça pela atmosfera.")
-            elif aqi == 3:
-                st.warning("⚠️ Atenção: Grupos sensíveis (crianças e idosos) podem sofrer efeitos respiratórios.")
-            else:
-                st.success("✅ O ar está limpo neste momento.")
-
-        # --- AÇÃO ATIVISTA ---
-        st.divider()
-        st.subheader("📢 Transforme esse dado em ação")
-        msg = f"Alerta de Fumaça: A qualidade do ar em {cidade_escolhida} está classificada como '{texto_qualidade}' (PM2.5: {pm25}). As queimadas estão sufocando nossa cidade."
-        
-        # Link para compartilhar no Twitter/X
-        import urllib.parse
-        msg_encoded = urllib.parse.quote(msg)
-        st.markdown(f'[🐦 Postar no X (Twitter)](https://twitter.com/intent/tweet?text={msg_encoded})', unsafe_allow_html=True)
-
+            st.info("""
+            **O que é PM2.5?** São partículas muito finas (2.5 micra) geradas principalmente por **queimadas** e escapamentos. 
+            Elas entram fundo no pulmão e corrente sanguínea. A OMS recomenda níveis abaixo de 15 µg/m³.
+            """)
+            
+            # --- BOTÃO DE ENGAJAMENTO ---
+            st.markdown("### 📢 Faça barulho")
+            texto_share = f"Atenção {nome_encontrado}: A qualidade do ar está {status_texto} (PM2.5: {pm25}). Dados do Monitor de Fumaça."
+            link_twitter = f"https://twitter.com/intent/tweet?text={texto_share}"
+            
+            st.markdown(f"[🐦 Compartilhar Situação no Twitter]({link_twitter})")
+            
+        else:
+            st.error("Erro ao obter dados meteorológicos.")
+            
     else:
-        st.error("Erro ao obter dados. Verifique a conexão.")
+        st.warning(nome_encontrado) # Mostra mensagem de erro da função get_lat_lon
+        
