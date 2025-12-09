@@ -1,82 +1,157 @@
 import streamlit as st
-import streamlit.components.v1 as components
+import pandas as pd
 import requests
-import urllib.parse
+import altair as alt
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Portal Deter", page_icon="🛰️", layout="wide")
+# Configuração da Página
+st.set_page_config(
+    page_title="Dashboard MapBiomas",
+    page_icon="📊",
+    layout="wide"
+)
 
-# --- CSS PARA REMOVER BORDAS E DEIXAR LIMPO ---
-st.markdown("""
-    <style>
-        .block-container {padding-top: 1rem; padding-bottom: 0rem;}
-        iframe {border: 0px;}
-    </style>
-""", unsafe_allow_html=True)
+# --- CONFIGURAÇÃO DA API ---
+# Headers para evitar bloqueio (mimetizando um navegador real)
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Referer": "https://plataforma.alerta.mapbiomas.org/"
+}
 
-# --- FUNÇÕES ---
-def buscar_dados_cidade(nome_cidade):
-    # Lista VIP de cidades para garantir o ID correto rápido
-    # Adicionei os IDs oficiais do IBGE
-    CIDADES_VIP = {
-        "altamira": "1500602",
-        "porto velho": "1100205",
-        "labrea": "1302405", 
-        "apui": "1300029",
-        "sao felix do xingu": "1507300",
-        "novo progresso": "1505031",
-        "colneza": "5103254",
-        "itaipual": "1503606"
+URL_API = "https://plataforma.alerta.mapbiomas.org/api/v1/alerts"
+
+# --- FUNÇÃO DE BUSCA DE DADOS ---
+@st.cache_data(ttl=3600) # Cache de 1 hora para não sobrecarregar a API
+def carregar_dados(dias_atras=30, limite=2000):
+    """
+    Busca os últimos X alertas para gerar as estatísticas.
+    """
+    data_inicio = (datetime.now() - timedelta(days=dias_atras)).strftime('%Y-%m-%d')
+    
+    params = {
+        "published_at_from": data_inicio,
+        "limit": limite,
+        "sort_by": "published_at",
+        "sort_order": "desc"
     }
     
-    nome_norm = nome_cidade.lower().strip()
-    
-    # 1. Tenta na lista VIP
-    if nome_norm in CIDADES_VIP:
-        return CIDADES_VIP[nome_norm], nome_cidade.title()
-    
-    # 2. Tenta busca genérica no IBGE
     try:
-        url = "https://servicodados.ibge.gov.br/api/v1/localidades/municipios"
-        resp = requests.get(url, timeout=3)
-        for c in resp.json():
-            if c['nome'].lower() == nome_norm:
-                return c['id'], c['nome']
-    except:
-        pass
-    return None, None
+        response = requests.get(URL_API, params=params, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        dados = response.json()
+        
+        # A API pode retornar dicionário {'data': [...]} ou lista direta [...]
+        lista_alertas = dados.get('data', []) if isinstance(dados, dict) else dados
+        
+        if not lista_alertas:
+            return pd.DataFrame()
+
+        # Transformar em DataFrame para facilitar cálculos
+        df = pd.DataFrame(lista_alertas)
+        
+        # Selecionar e limpar colunas importantes
+        cols_desejadas = ['alert_code', 'area_ha', 'state', 'municipality', 'published_at']
+        # Garante que as colunas existem antes de filtrar
+        cols_existentes = [c for c in cols_desejadas if c in df.columns]
+        df = df[cols_existentes]
+        
+        # Converter data
+        df['published_at'] = pd.to_datetime(df['published_at'])
+        df['Data'] = df['published_at'].dt.date # Cria coluna só com a data (sem hora)
+        
+        return df
+
+    except Exception as e:
+        st.error(f"Erro na conexão com MapBiomas: {e}")
+        return pd.DataFrame()
 
 # --- INTERFACE ---
-st.sidebar.title("🛰️ Monitoramento Real")
-st.sidebar.info("Este portal conecta diretamente aos servidores do TerraBrasilis/INPE, contornando bloqueios internacionais.")
+st.title("📊 Painel de Controle: Desmatamento Recente")
+st.markdown("Análise baseada nos alertas validados publicados pelo **MapBiomas Alerta**.")
 
-cidade_input = st.sidebar.text_input("Digite a Cidade:", "Porto Velho")
-botao = st.sidebar.button("Carregar Painel Oficial")
+# Filtros na Barra Lateral
+st.sidebar.header("Filtros")
+dias = st.sidebar.slider("Período de Análise (dias):", 7, 90, 30)
+limite_busca = st.sidebar.select_slider("Amostra de Alertas:", options=[500, 1000, 2000, 5000], value=1000)
 
-# Lógica Principal
-if cidade_input:
-    cod_ibge, nome_real = buscar_dados_cidade(cidade_input)
+if st.sidebar.button("Atualizar Dados"):
+    st.cache_data.clear() # Limpa o cache para forçar nova busca
+
+# Carregamento
+with st.spinner(f"Baixando e processando os últimos {limite_busca} alertas..."):
+    df = carregar_dados(dias_atras=dias, limite=limite_busca)
+
+if not df.empty:
+    # --- KPIs (Indicadores Principais) ---
+    total_area = df['area_ha'].sum()
+    total_alertas = len(df)
+    estado_top = df['state'].value_counts().idxmax()
     
-    if cod_ibge:
-        st.title(f"Monitoramento Oficial: {nome_real}")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Área Total Detectada", f"{total_area:,.1f} ha")
+    col2.metric("Total de Alertas", total_alertas)
+    col3.metric("Estado + Crítico", estado_top)
+    
+    st.divider()
+
+    # --- 1. EVOLUÇÃO TEMPORAL (Gráfico de Linha/Área) ---
+    st.subheader("📅 Evolução Diária (Área Desmatada)")
+    
+    # Agrupar por dia
+    df_tempo = df.groupby('Data')['area_ha'].sum().reset_index()
+    
+    chart_tempo = alt.Chart(df_tempo).mark_area(
+        line={'color':'darkred'},
+        color=alt.Gradient(
+            gradient='linear',
+            stops=[alt.GradientStop(color='white', offset=0),
+                   alt.GradientStop(color='darkred', offset=1)],
+            x1=1, x2=1, y1=1, y2=0
+        )
+    ).encode(
+        x=alt.X('Data:T', title='Data de Publicação'),
+        y=alt.Y('area_ha:Q', title='Área (ha)'),
+        tooltip=['Data:T', 'area_ha:Q']
+    ).properties(height=350)
+    
+    st.altair_chart(chart_tempo, use_container_width=True)
+    
+    # --- COLUNAS PARA RANKINGS ---
+    col_est, col_mun = st.columns(2)
+    
+    # --- 2. RANKING DE ESTADOS (Gráfico de Barras) ---
+    with col_est:
+        st.subheader("🗺️ Top Estados (por Área)")
+        df_uf = df.groupby('state')['area_ha'].sum().reset_index().sort_values('area_ha', ascending=False)
         
-        # URL Mágica: Esta é a URL que o site do TerraBrasilis usa para montar os dashboards
-        # Nós injetamos o código da cidade diretamente nela.
-        # Bioma Amazônia (padrão)
-        url_painel = f"https://terrabrasilis.dpi.inpe.br/app/dashboard/alerts/legal/amazon/aggregated/{cod_ibge}"
+        chart_uf = alt.Chart(df_uf).mark_bar().encode(
+            x=alt.X('area_ha:Q', title='Hectares'),
+            y=alt.Y('state:N', sort='-x', title='Estado'),
+            color=alt.value('#2E8B57'), # Cor Verde Floresta
+            tooltip=['state', 'area_ha']
+        )
+        st.altair_chart(chart_uf, use_container_width=True)
+
+    # --- 3. RANKING DE CIDADES (Tabela/Gráfico) ---
+    with col_mun:
+        st.subheader("🏙️ Top 10 Municípios")
+        df_mun = df.groupby(['municipality', 'state'])['area_ha'].sum().reset_index()
+        df_mun = df_mun.sort_values('area_ha', ascending=False).head(10)
         
-        st.markdown(f"""
-        <div style="background-color: #d4edda; color: #155724; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
-            ✅ <b>Conexão Estabelecida:</b> Exibindo dados oficiais do INPE em tempo real para o código IBGE <b>{cod_ibge}</b>.
-        </div>
-        """, unsafe_allow_html=True)
+        # Mostra como gráfico de barras horizontal
+        chart_mun = alt.Chart(df_mun).mark_bar().encode(
+            x=alt.X('area_ha:Q', title='Hectares'),
+            y=alt.Y('municipality:N', sort='-x', title='Município'),
+            color=alt.value('#FF8C00'), # Cor Laranja
+            tooltip=['municipality', 'state', 'area_ha']
+        )
+        st.altair_chart(chart_mun, use_container_width=True)
         
-        # O Pulo do Gato: Iframe
-        # Isso faz o SEU navegador carregar o site, burlando o bloqueio do servidor nos EUA
-        components.iframe(url_painel, height=800, scrolling=True)
-        
-        st.caption("Fonte: Painel TerraBrasilis - Governo Federal.")
-        
-    else:
-        st.error("Cidade não encontrada no IBGE. Tente 'Altamira' ou 'Porto Velho'.")
+    # --- TABELA DE DADOS BRUTOS ---
+    with st.expander("📂 Ver lista completa dos dados baixados"):
+        st.dataframe(df)
+
 else:
-    st.write("👈 Digite uma cidade ao lado para começar.")
+    st.warning("Não foi possível carregar dados. O MapBiomas pode ter bloqueado a conexão ou não há alertas no período.")
+    st.info("Tente clicar em 'Atualizar Dados' na barra lateral.")
