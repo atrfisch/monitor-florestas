@@ -1,158 +1,158 @@
 import streamlit as st
 import pandas as pd
 import requests
-import pydeck as pdk
-import random
+import altair as alt
 from datetime import datetime
 
 # Configuração Visual
-st.set_page_config(page_title="Vigia da Floresta", page_icon="🔥", layout="wide")
+st.set_page_config(page_title="Monitor TerraBrasilis", page_icon="🛰️", layout="wide")
 
-# --- BANCO DE DADOS INTERNO (Para não depender de APIs externas) ---
-# Adicionei as principais cidades do arco do desmatamento aqui
-CIDADES_FIXAS = {
-    "altamira": {"id": "1500602", "lat": -3.2033, "lon": -52.2064, "nome": "Altamira (PA)"},
-    "apui": {"id": "1300029", "lat": -7.1947, "lon": -59.8961, "nome": "Apuí (AM)"},
-    "labrea": {"id": "1302405", "lat": -7.2590, "lon": -64.7981, "nome": "Lábrea (AM)"},
-    "porto velho": {"id": "1100205", "lat": -8.7612, "lon": -63.9039, "nome": "Porto Velho (RO)"},
-    "sao felix do xingu": {"id": "1507300", "lat": -6.6447, "lon": -51.9950, "nome": "São Félix do Xingu (PA)"},
-    "novo progresso": {"id": "1505031", "lat": -7.0390, "lon": -55.4339, "nome": "Novo Progresso (PA)"},
-    "itaituba": {"id": "1503606", "lat": -4.2758, "lon": -55.9836, "nome": "Itaituba (PA)"},
-    "colniza": {"id": "5103254", "lat": -9.3444, "lon": -59.0253, "nome": "Colniza (MT)"},
-    "manaus": {"id": "1302603", "lat": -3.1190, "lon": -60.0217, "nome": "Manaus (AM)"}
+# --- CABEÇALHOS (Para evitar bloqueio) ---
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json"
+}
+
+# --- BANCO DE DADOS CIDADES (Para garantir velocidade) ---
+CIDADES_PRINCIPAIS = {
+    "altamira": {"id": "1500602", "nome": "Altamira (PA)"},
+    "sao felix do xingu": {"id": "1507300", "nome": "São Félix do Xingu (PA)"},
+    "porto velho": {"id": "1100205", "nome": "Porto Velho (RO)"},
+    "labrea": {"id": "1302405", "nome": "Lábrea (AM)"},
+    "apui": {"id": "1300029", "nome": "Apuí (AM)"},
+    "novo progresso": {"id": "1505031", "nome": "Novo Progresso (PA)"},
+    "colneza": {"id": "5103254", "nome": "Colniza (MT)"}
 }
 
 # --- FUNÇÕES ---
 
 def normalizar_texto(texto):
-    """Remove acentos e deixa minusculo para facilitar busca"""
     import unicodedata
     nfkd = unicodedata.normalize('NFKD', texto)
     return u"".join([c for c in nfkd if not unicodedata.combining(c)]).lower().strip()
 
-def buscar_coords_cidade(nome_cidade):
+def buscar_ibge(nome_cidade):
+    # 1. Tenta banco local
     nome_norm = normalizar_texto(nome_cidade)
+    if nome_norm in CIDADES_PRINCIPAIS:
+        return CIDADES_PRINCIPAIS[nome_norm]['id'], CIDADES_PRINCIPAIS[nome_norm]['nome']
     
-    # 1. Tenta buscar no nosso banco interno (Mais rápido e seguro)
-    if nome_norm in CIDADES_FIXAS:
-        cidade = CIDADES_FIXAS[nome_norm]
-        return cidade['id'], cidade['nome'], cidade['lat'], cidade['lon']
-    
-    # 2. Se não achar, tenta buscar na API do IBGE/OpenStreet (Fallback)
+    # 2. Tenta API IBGE
     try:
-        # Busca ID no IBGE
-        url_ibge = f"https://servicodados.ibge.gov.br/api/v1/localidades/municipios"
-        res_ibge = requests.get(url_ibge, timeout=3)
-        municipios = res_ibge.json()
-        
-        id_ibge = None
-        nome_oficial = None
-        
-        for mun in municipios:
-            if normalizar_texto(mun['nome']) == nome_norm:
-                id_ibge = mun['id']
-                nome_oficial = mun['nome']
-                break
-        
-        if id_ibge:
-            # Busca Coordenadas no Nominatim (Pode falhar por bloqueio)
-            headers = {'User-Agent': 'MonitorAppStudent/1.0'}
-            url_geo = f"https://nominatim.openstreetmap.org/search?city={nome_cidade}&country=Brazil&format=json"
-            res_geo = requests.get(url_geo, headers=headers, timeout=3)
-            if res_geo.status_code == 200 and len(res_geo.json()) > 0:
-                lat = float(res_geo.json()[0]['lat'])
-                lon = float(res_geo.json()[0]['lon'])
-                return id_ibge, nome_oficial, lat, lon
-            else:
-                # Se achou a cidade mas não as coordenadas, chuta o centro do PA
-                return id_ibge, nome_oficial, -3.0, -52.0
-                
-    except Exception as e:
-        st.error(f"Erro técnico na busca: {e}")
-    
-    return None, None, None, None
-
-def gerar_dados_simulados(lat_centro, lon_centro, qtd=30):
-    dados = []
-    for _ in range(qtd):
-        desvio_lat = random.uniform(-0.15, 0.15)
-        desvio_lon = random.uniform(-0.15, 0.15)
-        dados.append({
-            'lat': lat_centro + desvio_lat,
-            'lon': lon_centro + desvio_lon,
-            'risco': random.randint(40, 100),
-            'data': datetime.now().strftime("%Y-%m-%d %H:%M")
-        })
-    return dados
-
-def buscar_focos_inpe(codigo_ibge):
-    # Tenta buscar dados reais
-    url = "https://queimadas.dgi.inpe.br/api/focos/?pais_id=33" 
-    try:
-        response = requests.get(url, timeout=3) 
-        if response.status_code == 200:
-            focos = response.json()
-            cod_6 = str(codigo_ibge)[:6]
-            focos_cidade = [
-                {
-                    'lat': f['properties']['latitude'],
-                    'lon': f['properties']['longitude'],
-                    'risco': f['properties'].get('risco_fogo', 0),
-                    'data': f['properties']['data_hora']
-                }
-                for f in focos 
-                if str(f['properties']['id_municipio']) == str(codigo_ibge) or str(f['properties']['id_municipio']) == cod_6
-            ]
-            return focos_cidade, True
+        url = "https://servicodados.ibge.gov.br/api/v1/localidades/municipios"
+        resp = requests.get(url, timeout=3)
+        for cid in resp.json():
+            if normalizar_texto(cid['nome']) == nome_norm:
+                return cid['id'], cid['nome']
     except:
         pass
-    return [], False
+    return None, None
+
+def buscar_terrabrasilis(codigo_ibge):
+    """
+    Busca dados agregados do sistema DETER (Alertas).
+    Tenta primeiro Amazônia (deter-amz), depois Cerrado (deter-cerrado).
+    """
+    # URL da API de Dashboard do TerraBrasilis
+    base_url = "https://terrabrasilis.dpi.inpe.br/api/v1/dashboard/verification/warnings/municipality"
+    
+    # Biomas para tentar (O código IBGE não diz o bioma, então testamos os dois principais)
+    projetos = ["deter-amz", "deter-cerrado"]
+    
+    for projeto in projetos:
+        try:
+            # Endpoint que traz o histórico mensal
+            url = f"{base_url}/{codigo_ibge}/history?project={projeto}"
+            response = requests.get(url, headers=HEADERS, timeout=5)
+            
+            if response.status_code == 200:
+                dados = response.json()
+                # Verifica se retornou dados válidos
+                if dados and 'years' in dados and len(dados['years']) > 0:
+                    return dados, projeto # Retorna os dados e qual bioma funcionou
+        except Exception as e:
+            continue # Tenta o próximo bioma
+            
+    return None, None
 
 # --- INTERFACE ---
 
-st.title("🔥 Vigia da Floresta: Monitor de Queimadas")
-st.info("Dica: Tente buscar por **Altamira**, **Apui**, **Labrea** ou **Porto Velho**.")
+st.title("🛰️ Monitor Oficial INPE (TerraBrasilis)")
+st.markdown("""
+Este painel consome dados do **DETER**, o sistema oficial de alertas de desmatamento do governo brasileiro.
+Diferente das queimadas, o DETER "enxerga" o corte raso da floresta mesmo sem fogo.
+""")
 
-cidade_input = st.text_input("Digite o nome da cidade:")
+cidade_input = st.text_input("Digite a cidade (ex: Altamira, Apuí):", placeholder="Pressione Enter para buscar")
 
 if cidade_input:
-    id_ibge, nome_oficial, lat, lon = buscar_coords_cidade(cidade_input)
+    cod_ibge, nome_oficial = buscar_ibge(cidade_input)
     
-    if id_ibge:
-        st.success(f"📍 Cidade localizada: **{nome_oficial}**")
+    if cod_ibge:
+        st.info(f"🔎 Buscando dados oficiais para **{nome_oficial}**...")
         
-        # Busca dados (Reais ou Simulados)
-        dados, sao_reais = buscar_focos_inpe(id_ibge)
+        dados_json, bioma_detectado = buscar_terrabrasilis(cod_ibge)
         
-        if not sao_reais or len(dados) == 0:
-            st.warning("⚠️ Dados em tempo real indisponíveis ou sem focos agora. **Exibindo SIMULAÇÃO**.")
-            dados = gerar_dados_simulados(lat, lon)
-            sao_reais = False
+        if dados_json:
+            # Processamento dos Dados
+            # A API retorna uma estrutura complexa aninhada por anos. Vamos simplificar.
+            lista_dados = []
+            
+            # Pega o ano atual e o anterior para comparar
+            anos_disponiveis = sorted(dados_json['years'], key=lambda x: x['year'], reverse=True)
+            
+            for ano_obj in anos_disponiveis[:2]: # Pega os 2 últimos anos
+                ano = ano_obj['year']
+                for mes_obj in ano_obj['months']:
+                    # O TerraBrasilis as vezes retorna meses vazios, filtramos
+                    lista_dados.append({
+                        "Mês": f"{mes_obj['month']}/{ano}",
+                        "Data": datetime(ano, int(mes_obj['month']), 1), # Para ordenação
+                        "Área (km²)": mes_obj['area'],
+                        "Ano": str(ano)
+                    })
+            
+            if lista_dados:
+                df = pd.DataFrame(lista_dados)
+                
+                # --- VISUALIZAÇÃO ---
+                st.success(f"✅ Dados encontrados! Bioma: **{bioma_detectado.upper()}**")
+                
+                # 1. Métricas Recentes
+                # Pega o dado mais recente (último mês disponível)
+                ultimo_dado = sorted(lista_dados, key=lambda x: x['Data'])[-1]
+                total_ano_atual = df[df['Ano'] == str(datetime.now().year)]['Área (km²)'].sum()
+                
+                col1, col2 = st.columns(2)
+                col1.metric(f"Alerta em {ultimo_dado['Mês']}", f"{ultimo_dado['Área (km²)']:.2f} km²")
+                col2.metric(f"Total Acumulado em {datetime.now().year}", f"{total_ano_atual:.2f} km²")
+                
+                st.divider()
+                
+                # 2. Gráfico de Barras (Altair)
+                st.subheader("📊 Evolução do Desmatamento (Alertas)")
+                
+                chart = alt.Chart(df).mark_bar().encode(
+                    x=alt.X('Mês', sort=None), # Mantém a ordem cronológica
+                    y='Área (km²)',
+                    color='Ano',
+                    tooltip=['Mês', 'Área (km²)']
+                ).properties(height=400)
+                
+                st.altair_chart(chart, use_container_width=True)
+                
+                # 3. Análise Crítica (Automática)
+                st.warning(f"Nota: Estes dados representam {total_ano_atual:.1f} km² de floresta com alertas de alteração somente este ano. Isso equivale a aproximadamente {int(total_ano_atual * 100)} campos de futebol.")
+
+            else:
+                st.warning("O INPE não retornou dados mensais para este período.")
         else:
-            st.success(f"📡 Dados REAIS do INPE obtidos! {len(dados)} focos.")
-
-        # Mapa
-        df_map = pd.DataFrame(dados)
-        
-        layer = pdk.Layer(
-            "ScatterplotLayer",
-            df_map,
-            get_position=["lon", "lat"],
-            get_color=[255, 50, 0, 180],
-            get_radius=1000,
-            pickable=True,
-        )
-        
-        view_state = pdk.ViewState(latitude=lat, longitude=lon, zoom=8)
-        
-        st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state))
-        
-        # Ação
-        st.divider()
-        msg = f"Denúncia: O sistema detectou {len(dados)} focos de calor em {nome_oficial}."
-        link = f'<a href="mailto:?subject=Fogo em {nome_oficial}&body={msg}" target="_blank"><button>📧 Denunciar</button></a>'
-        st.markdown(link, unsafe_allow_html=True)
-
+            st.error("Nenhum dado encontrado no TerraBrasilis.")
+            st.write("Possíveis motivos:")
+            st.write("1. A cidade não pertence aos biomas monitorados diariamente (Amazônia/Cerrado).")
+            st.write("2. A cidade não teve alertas significativos recentemente.")
     else:
-        st.error("Cidade não encontrada no banco de dados interno nem no IBGE.")
-        st.write("Tente digitar **Altamira** (sem acento) para testar.")
+        st.error("Cidade não encontrada no IBGE.")
+
+st.markdown("---")
+st.caption("Fonte: INPE/TerraBrasilis (Sistema DETER). Desenvolvido para fins educativos e de ativismo.")
